@@ -1,12 +1,13 @@
-use std::{sync::{mpsc, RwLock, Arc}, thread::{JoinHandle, self}, io::{Write, BufReader, BufRead}};
+use std::{sync::{mpsc, RwLock, Arc}, thread, io::{Write, BufReader, BufRead}};
 
 use crate::cmd::ProcessRunning;
+use crate::network_connector::{RequestString, ResponseString};
 
 pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>) 
-    -> (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>) {
+    -> (std::sync::mpsc::Sender<RequestString>, std::sync::mpsc::Receiver<ResponseString>) {
 
-    let (process_input, p_recv) = mpsc::channel::<String>();
-    let (p_send, process_output) = mpsc::channel::<String>();
+    let (process_input, p_recv) = mpsc::channel::<RequestString>();
+    let (p_send, process_output) = mpsc::channel::<ResponseString>();
 
     let a1 = cmd.clone();
     let a1_read = cmd.clone();
@@ -20,17 +21,26 @@ pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>)
         drop(posses);
 
         childin.write_all("chcp 65001\r\n".as_bytes()).expect("Unable To Change To UTF8");
-        let a1_read = a1_read.read().unwrap();
+        let a1_read_r = a1_read.read().unwrap();
         loop {
-            if a1_read.terminated_flag == 1 {
+            if a1_read_r.terminated_flag == 1 {
                 break;
             }
             let o = recv.recv();
             match o {
                 Ok(msg) => {
-                    let k = childin.write_all(msg.as_bytes());
-                    dbg!(&k);
-                    dbg!(msg);
+
+                    match msg {
+                        RequestString::Request(msg, _) => {
+                            childin.write_all(msg.as_bytes()).expect("Write child error");
+                            dbg!(msg);
+                        },
+                        RequestString::Terminate(_) => {
+                            let mut lg = a1_read.write().unwrap();
+                            (*lg).terminated_flag = 1;
+                        }
+                    }
+
                 },
                 Err(e) => { 
                     dbg!(e);
@@ -55,7 +65,8 @@ pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>)
             }
             let mut buf = vec![];
             let _ = bufreader.read_until(b'\n', &mut buf);
-            let o = send.send(String::from_utf8_lossy(&buf).to_string());
+            let resp = ResponseString::Response(String::from_utf8_lossy(&buf).to_string(), None);
+            let o = send.send(resp);
             dbg!(String::from_utf8_lossy(&buf).to_string());
             match o {
                 Err(e) => {
