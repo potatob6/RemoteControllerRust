@@ -10,6 +10,13 @@ pub mod test {
         dbg!(command_parser::multi_command_parser(cmd));
     }
 
+    // :(3a) \n(0a) \(5c) %(25)
+    #[test]
+    fn incoming_data_decode_test() {
+        let cmd = "Action:new\nSeq:2\nFile Name:\"E%3a%5cshare_lock%5cshare\"\n\n27184yh291j4291n%5c%25".as_bytes();
+        dbg!(String::from_utf8_lossy(&command_parser::multi_command_parser(cmd).payload[..]).to_string());
+    }
+
     #[test]
     fn escape_decode_test() {
         let buf = "98wu80%3a%0a%5c%25%24%23%22".as_bytes();

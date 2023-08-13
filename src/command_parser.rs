@@ -84,10 +84,10 @@ pub fn multi_command_parser<'a>(cmd: &'a [u8]) -> HttpLikeData {
             let mut iter1 = k.split(|num| *num == b':');
             let split_kv = (
                 String::from_utf8_lossy(
-                    iter1.next().unwrap()
+                    &escape_decode(iter1.next().unwrap())[..]
                 ).to_string(), 
                 String::from_utf8_lossy(
-                    iter1.next().unwrap()
+                    &escape_decode(iter1.next().unwrap())[..]
                 ).to_string());
             vec_headers.push(split_kv);
         }
@@ -95,7 +95,7 @@ pub fn multi_command_parser<'a>(cmd: &'a [u8]) -> HttpLikeData {
 
     HttpLikeData { 
         headers: vec_headers, 
-        payload: ref_payload.to_vec()
+        payload: escape_decode(ref_payload),
     }
     // Parse command and data
 
