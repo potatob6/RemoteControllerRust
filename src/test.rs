@@ -2,19 +2,48 @@
 pub mod test {
     use std::{net::{TcpStream, TcpListener}, time::Duration, io::{Write, Read}, thread};
 
-    use crate::command_parser;
+    use crate::command_parser::{self, HttpLikeData};
+
+    #[test]
+    fn wrong_network_stream_parse_test() {
+        let m = b"((U$(H@(D\n@)$Uuwui\narhiw\n\narwairw\\";
+        let p = HttpLikeData::multi_command_parse(m).unwrap();
+        let r = p.to_network_stream();
+        
+        dbg!(String::from_utf8_lossy(&r[..]).to_string());
+    }
+
+    #[test]
+    fn httplikedata_constructor_test() {
+        let m = HttpLikeData::new()
+            .header("Action", "Drop")
+            .header("ACK_SEQ", "1")
+            .header("File Name", "E:\\share\\goto")
+            .payload(b"Fuck your self::*&(@)%@(*(");
+
+        let k = m.to_network_stream();
+        let m1 = HttpLikeData::multi_command_parse(&k[..]);
+        assert_eq!(m, m1.unwrap());
+    }
+
+    #[test]
+    fn encoder_escape_test() {
+        let m = "oh289%::\\\n".as_bytes();
+        let s = String::from_utf8_lossy(&command_parser::escape_encode(&m[..])).to_string();
+        println!("{s}");
+    }
 
     #[test]
     fn command_parser_test() {
         let cmd = "Action:new\nSeq:2\n\n".as_bytes();
-        dbg!(command_parser::multi_command_parser(cmd));
+        dbg!(HttpLikeData::multi_command_parse(cmd));
     }
 
     // :(3a) \n(0a) \(5c) %(25)
     #[test]
     fn incoming_data_decode_test() {
         let cmd = "Action:new\nSeq:2\nFile Name:\"E%3a%5cshare_lock%5cshare\"\n\n27184yh291j4291n%5c%25".as_bytes();
-        dbg!(String::from_utf8_lossy(&command_parser::multi_command_parser(cmd).payload[..]).to_string());
+        dbg!(String::from_utf8_lossy(&HttpLikeData::multi_command_parse(cmd).unwrap().payload[..]).to_string());
     }
 
     #[test]
