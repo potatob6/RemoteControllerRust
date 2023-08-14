@@ -1,16 +1,40 @@
 #[cfg(test)]
 pub mod test {
-    use std::{net::{TcpStream, TcpListener}, time::Duration, io::{Write, Read}, thread};
+    use std::{net::{TcpStream, TcpListener}, time::Duration, io::{Write, Read}, thread, collections::HashMap};
 
-    use crate::command_parser::{self, HttpLikeData};
+    use crate::{command_parser::{self, HttpLikeData}, network_connector};
+
+    #[test]
+    fn client_test() {
+        let network = network_connector::NetworkConnector::new(String::from("127.0.0.1:5050"));
+
+        println!("Waiting");
+        let result = network.join();
+    }
+
+    #[test]
+    fn server_test() {
+        let tcp = TcpListener::bind("0.0.0.0:5050").unwrap();
+        for k in tcp.incoming() {
+            let mut k = k.unwrap();
+            let data = HttpLikeData::new()
+                .header("Action", "New Command")
+                .header("Program", "cmd");
+
+            k.write_all(&data.to_network_stream()[..]).unwrap();
+            println!("Writed");
+            thread::sleep(Duration::from_secs(10000));
+        }
+    }
 
     #[test]
     fn wrong_network_stream_parse_test() {
         let m = b"((U$(H@(D\n@)$Uuwui\narhiw\n\narwairw\\";
         let p = HttpLikeData::multi_command_parse(m).unwrap();
         let r = p.to_network_stream();
+        let g = HttpLikeData::multi_command_parse(&r[..]).unwrap();
         
-        dbg!(String::from_utf8_lossy(&r[..]).to_string());
+        assert_eq!(g, p);
     }
 
     #[test]
@@ -36,21 +60,21 @@ pub mod test {
     #[test]
     fn command_parser_test() {
         let cmd = "Action:new\nSeq:2\n\n".as_bytes();
-        dbg!(HttpLikeData::multi_command_parse(cmd));
+        // dbg!(HttpLikeData::multi_command_parse(cmd));
     }
 
     // :(3a) \n(0a) \(5c) %(25)
     #[test]
     fn incoming_data_decode_test() {
         let cmd = "Action:new\nSeq:2\nFile Name:\"E%3a%5cshare_lock%5cshare\"\n\n27184yh291j4291n%5c%25".as_bytes();
-        dbg!(String::from_utf8_lossy(&HttpLikeData::multi_command_parse(cmd).unwrap().payload[..]).to_string());
+        // dbg!(String::from_utf8_lossy(&HttpLikeData::multi_command_parse(cmd).unwrap().payload[..]).to_string());
     }
 
     #[test]
     fn escape_decode_test() {
         let buf = "98wu80%3a%0a%5c%25%24%23%22".as_bytes();
         let m = String::from_utf8_lossy(&command_parser::escape_decode(buf)).to_string();
-        dbg!(m);
+        // dbg!(m);
     }
 
     #[test]
@@ -59,7 +83,7 @@ pub mod test {
             let m = Some(20);
             match m {
                 Some(k) if k == 30 => {
-                    dbg!(k);
+                    // dbg!(k);
                     break;
                 }
                 Some(k) if k == 20 => continue,
@@ -86,9 +110,15 @@ pub mod test {
             std::io::stdin().read_line(& mut line).unwrap();
             let result = tcp.write(&k);
             match result {
-                Ok(0) => { dbg!("Ok(0)"); },
-                Ok(size) => { dbg!("Writed ", size); },
-                Err(e) => { dbg!(e); },
+                Ok(0) => { 
+                    // dbg!("Ok(0)");
+                },
+                Ok(size) => {
+                    //  dbg!("Writed ", size); 
+                },
+                Err(e) => {
+                    //  dbg!(e); 
+                },
             }
         }
     }

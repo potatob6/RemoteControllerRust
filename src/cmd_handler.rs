@@ -1,6 +1,6 @@
 use std::{sync::{mpsc, RwLock, Arc}, thread, io::{Write, BufReader, BufRead}};
 
-use crate::cmd::ProcessRunning;
+use crate::{cmd::ProcessRunning, command_parser::HttpLikeData};
 use crate::network_connector::{RequestString, ResponseString};
 
 pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>) 
@@ -31,11 +31,11 @@ pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>)
                 Ok(msg) => {
 
                     match msg {
-                        RequestString::Request(msg, _) => {
-                            childin.write_all(msg.as_bytes()).expect("Write child error");
-                            dbg!(msg);
+                        RequestString::Request(msg) => {
+                            childin.write_all(&msg.payload).expect("Write child error");
+                            // dbg!(msg);
                         },
-                        RequestString::Terminate(_) => {
+                        RequestString::Terminate(msg) => {
                             let mut lg = a1_read.write().unwrap();
                             (*lg).terminated_flag = 1;
                         }
@@ -43,7 +43,7 @@ pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>)
 
                 },
                 Err(e) => { 
-                    dbg!(e);
+                    // dbg!(e);
                 }
             }
         }
@@ -65,12 +65,17 @@ pub fn new_cmd_io_handler(cmd: Arc<RwLock<ProcessRunning>>)
             }
             let mut buf = vec![];
             let _ = bufreader.read_until(b'\n', &mut buf);
-            let resp = ResponseString::Response(String::from_utf8_lossy(&buf).to_string(), None);
+
+            let reply = HttpLikeData::new()
+                .header("Type", "Reply")
+                .payload(&buf);
+
+            let resp = ResponseString::Response(reply);
             let o = send.send(resp);
-            dbg!(String::from_utf8_lossy(&buf).to_string());
+            // dbg!(String::from_utf8_lossy(&buf).to_string());
             match o {
                 Err(e) => {
-                    dbg!(e);
+                    // dbg!(e);
                 },
                 _ => { }
             }

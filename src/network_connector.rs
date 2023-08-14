@@ -1,108 +1,264 @@
-use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Arc, RwLock}, net::TcpStream, thread::{JoinHandle, self}, time::Duration, io::{BufReader, BufRead, ErrorKind}};
+use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Arc, RwLock}, net::TcpStream, thread::{JoinHandle, self}, time::Duration, io::{BufReader, BufRead, ErrorKind, Write, BufWriter}, error::Error, cell::RefCell};
+
+use crate::{command_parser::HttpLikeData, cmd::ProcessRunning, cmd_handler};
 
 pub trait Process {
     fn terminate(&mut self);
 }
 
 pub enum ResponseString {
-    Response(String, Option<i32>),
-    Terminate(Option<String>, Option<i32>),
+    Response(HttpLikeData),
+    Terminate(HttpLikeData),
 }
 
-pub enum ResponseByte<const BUFSIZE: usize> {
-    Response([u8; BUFSIZE], Option<i32>),
-    Terminate(Option<[u8; BUFSIZE]>, Option<i32>),
+pub enum ResponseByte {
+    Response(HttpLikeData),
+    Terminate(HttpLikeData),
 }
 
 pub enum RequestString {
-    Request(String, Option<i32>),
-    Terminate(Option<i32>),
+    Request(HttpLikeData),
+    Terminate(HttpLikeData),
 }
 
-pub enum RequestByte<const BUFSIZE: usize> {
-    Terminate(Option<i32>),
-    Request([u8; BUFSIZE], Option<i32>)
+pub enum RequestByte {
+    Request(HttpLikeData),
+    Terminate(HttpLikeData),
 }
 
-pub struct NetworkConnector<const BUFSIZE: usize> {
+pub struct NetworkConnector {
     pub ip: String,
     pub port: String,
-    pub socket: TcpStream,
+    pub terminated: bool,
+    pub next_index: usize,
 
-    pub processors_str: HashMap<usize, (Sender<RequestString>, Receiver<ResponseString>, Arc<RwLock<dyn Process>>)>,
-    pub processors_byte: HashMap<usize, (Sender<RequestByte<BUFSIZE>>, Receiver<ResponseByte<BUFSIZE>>, Arc<RwLock<dyn Process>>)>,
+    pub processors: HashMap<usize, (Sender<RequestString>, Receiver<ResponseString>, Arc<RwLock<dyn Process>>)>,
+    // pub processors_byte: HashMap<usize, (Sender<RequestByte>, Receiver<ResponseByte>, Arc<RwLock<dyn Process>>)>,
+    pub self_msg: Vec<HttpLikeData>,
 }
 
 // Input format: <seq number>[ <command> <data>]*
 
-impl<const BUFSIZE: usize> NetworkConnector<BUFSIZE> {
+impl NetworkConnector {
     
     // Accepted IPv4 address
-    fn new(host: String) -> JoinHandle<Result<u8, std::io::Error>> {
-            thread::spawn( move || {
+    // Return: Err(1) = socket establish error
+    //         Err(2) = Host ip or port error
+    //         Err(3) = Encounter connection reset while read buf
+    //         Err(4) = Encounter reading 0 size from read buf(close by peer)
+    //         Err(5) = Encounter an unknown error
+    //         Err(6) = Cloning socket stream fail
+    //         Err(7) = Encounter an error while write out socket
+    pub fn new(host: String) -> JoinHandle<Result<u8, u8>> {
+            let network_handler = thread::spawn( move || {
             let splits: Vec<&str> = host.split(':').collect();
             if splits.len() < 2 {
-                panic!("Host Wrong.");
+                return Err(2);
             }
 
             let socket = TcpStream::connect(&host[..]);
 
+            let mut result: Result<u8, u8> = Ok(0);
             match socket {
                 Err(o) => {
-                    return Err(o);
+                    result = Err(1);
                 },
-                Ok(socket) => {
+                Ok(mut socket) => {
                     let mut myself = Self { 
                         ip: String::from(splits[0]), 
                         port: String::from(splits[1]), 
-                        socket,
-                        processors_str: HashMap::new(),
-                        processors_byte: HashMap::new(),
+                        terminated: false,
+                        processors: HashMap::new(),
+                        // processors_byte: HashMap::new(),
+                        self_msg: vec![],
+                        next_index: 0,
                     };
-                    myself.socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
 
-                    let mut recv_buf: Box<Vec<u8>> = Box::new(vec![]);
-                    let mut buf_reader = BufReader::new(myself.socket);
-    
-                    loop {
+                    socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+
+                    let mut recv_buf: Vec<u8> = vec![];
+                    let socket_clone = socket.try_clone();
+                    if let Err(_) = socket_clone {
+                        return Err(6);
+                    }
+                    let mut buf_reader = BufReader::new(socket_clone.unwrap());
+                    'outter: loop {
+                        let mut need_drop = vec![];
                         // Starting read msg queue
-                        let g = buf_reader.read_until(b'\\', &mut *recv_buf);
+                        let g = buf_reader.read_until(b'\\', &mut recv_buf);
                         match &g {
                             Err(g) if g.kind() == ErrorKind::ConnectionReset => {
                                 dbg!("Connection Reset");
+                                result = Err(3);
                                 break;
                             },
                             Err(g) if g.kind() == ErrorKind::TimedOut => {
-                                dbg!("Encounter time out");
+                                // dbg!("Encounter time out");
                             }
                             Ok(size) if *size == 0 => {
                                 dbg!("Read the 0 size");
+                                result = Err(4);
                                 break;
                             }
                             _ => { }
                         }
 
-                        if *recv_buf.last().unwrap() == b'\\' {
-                            (*recv_buf).pop();
-                            // Starting to sender to processes
-                            
-                            // Parsing input stream
-                            // match command_parser::multi_command_parser(&s[..]) {
-                            //     Some(inputcmd) => {
-                            //         todo!("According command to execute");
-                            //     },
-                            //     None => {
-
-                            //     }
-                            // }
+                        if recv_buf.len() != 0 {
+                            let data = HttpLikeData::multi_command_parse(&recv_buf[..]);
+                            dbg!(&data);
+                            match data {
+                                Some(val) => {
+                                    let (myself1, err_stream) = NetworkConnector::do_with_incoming_data_stream(myself, val);
+                                    myself = myself1;
+                                    if let Some(val) = err_stream {
+                                        need_drop.push(val);
+                                    }
+                                },
+                                None => {
+                                    // Drop this package
+                                }
+                            }
                         }
-                    
-                    // Starting receive msg queue
-                    }
 
-                    todo!("reset the tcpstream");
+                        recv_buf.clear();
+                        // Starting handle output of processes
+                        {
+                            let iter = myself.processors.iter();
+                            for queue_str in iter {
+                                let data = queue_str.1.1.recv();
+                                if let Err(_) = data {
+                                    queue_str.1.2.write().unwrap().terminate();
+                                    let data = HttpLikeData::new()
+                                        .header("Status", "Terminate")
+                                        .header("Index", &(*queue_str.0).to_string());
+                                    need_drop.push(*queue_str.0);
+                                    continue;
+                                }
+
+                                let data = data.unwrap();
+                                match data {
+                                    ResponseString::Response(mut data) => {
+                                        data = data.header("Ack Seq", &queue_str.0.to_string()[..]);
+                                        if let Err(_) = socket.write_all(&data.to_network_stream()[..]) {
+                                            result = Err(7);
+                                            break 'outter;
+                                        }
+                                    },
+                                    ResponseString::Terminate(data) => {
+
+                                    }
+                                }
+                            }
+                        }
+
+                        for need_drops in need_drop {
+                            (&mut myself.processors).remove(&need_drops);
+                        }
+                    }
+                    result = Err(5)
                 }
+            };
+            result
+        });
+        network_handler
+    }
+
+
+    // Incoming data headers: 
+    // Action(New Command):
+    //                      Program: The executable file of process running.
+    //        [Alternative] Args: The args of program.
+    // Action(Input Command):
+    // Action(New File Input):
+    // Action(Input File):
+    // Action(Terminate):
+
+
+    // Output data headers:
+    // Status(Error):
+    //                      Action: The reply of action.
+    //                      Error Message: The error message of error.
+    //        [Alternative] Program: Indicates the program of error encountered.
+    // Status(Success):
+    //                      Action: The reply of action.
+    //        [Alternative] Program: Indicates the program of success encountered.
+    //        [Alternative] Index: The index of reply process.
+    // Status(Terminate):
+
+    pub fn do_with_incoming_data_stream(mut self: Self, data: HttpLikeData) -> (Self, Option<usize>) {
+        let action = data.headers.get("Action");
+        if let Some(val) = action {
+            if val == "New Command" {
+                // Do something ...
+                let program = data.headers.get("Program");
+                match program {
+                    None => {
+                        let error_msg = HttpLikeData::new()
+                            .header("Status", "Error")
+                            .header("Error Message", "Unknown starting program.");
+
+                        self.self_msg.push(error_msg);
+                    },
+                    Some(program) => {
+                        let args = data.headers.get("Args");
+
+                        if let Some(args) = args {
+                            let args = String::from(args);
+                            let pr = ProcessRunning::new_str_args(String::from(program), args);
+                            if let Err(_) = pr {
+                                let error_msg = HttpLikeData::new()
+                                    .header("Status", "Error")
+                                    .header("Error Message", "Unable to start program.");
+                                dbg!(&error_msg);
+                                self.self_msg.push(error_msg);
+                                return (self, None);
+                            }
+
+                            let pr = Arc::new(RwLock::from(pr.unwrap()));
+                            let (i, o) = cmd_handler::new_cmd_io_handler(pr.clone());
+                            self.processors.insert(self.next_index, (i, o, pr));
+
+                            let data = HttpLikeData::new()
+                                .header("Status", "Success")
+                                .header("Prorgram", &String::from(program))
+                                .header("Index", &self.next_index.to_string());
+                            self.self_msg.push(data);
+                            self.next_index += 1;
+
+                        } else {
+                            let pr = ProcessRunning::new(String::from(program));
+                            if let Err(_) = pr {
+                                let error_msg = HttpLikeData::new()
+                                    .header("Status", "Error")
+                                    .header("Error Message", "Unable to start program.");
+                                dbg!(&error_msg);
+                                self.self_msg.push(error_msg);
+                                return (self, None);
+                            }
+
+                            let pr = Arc::new(RwLock::from(pr.unwrap()));
+                            let (i, o) = cmd_handler::new_cmd_io_handler(pr.clone());
+                            self.processors.insert(self.next_index, (i, o, pr));
+                            let data = HttpLikeData::new()
+                                .header("Status", "Success")
+                                .header("Prorgram", &String::from(program))
+                                .header("Index", &self.next_index.to_string());
+                            self.self_msg.push(data);
+                            self.next_index += 1;
+                        }
+                    }
+                }
+                
+            } else if val == "Input Command" {
+
+            } else if val == "New File Input" {
+
+            } else if val == "Input File" {
+
+            } else if val == "Terminate" {
+
             }
-        })
+        }
+        (self, None)
     }
 }

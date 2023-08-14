@@ -71,7 +71,11 @@ pub fn escape_decode(buf: &[u8]) -> Vec<u8> {
                             None
                         },
                         None => {
-                            // If there is not on the table, you can decide add the buf into result buf
+                            // If read the escape code is not in the tablet, you can decide add it to result with origin sample
+                            // example: 
+                            //    read: %24 (not in the tablet), result: %24
+                            // if not execute v.append:
+                            //    read: %24 (not in the tablet), result: (nothing)
                             // v.append(&mut v1);
                             None
                         },
