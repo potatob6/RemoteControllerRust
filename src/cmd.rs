@@ -16,8 +16,8 @@ impl ProcessRunning {
             .arg(&input_args)
             .spawn();
 
-        dbg!("Started process running");
-        dbg!(&command);
+        // dbg!("Started process running");
+        // dbg!(&command);
 
         match command {
             Ok(c) => {

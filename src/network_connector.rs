@@ -1,26 +1,26 @@
-use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Arc, RwLock}, net::TcpStream, thread::{JoinHandle, self}, time::Duration, io::{BufReader, BufRead, ErrorKind, Write, BufWriter}, error::Error, cell::RefCell};
+use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver, RecvTimeoutError}, Arc, RwLock}, net::TcpStream, thread::{JoinHandle, self}, time::Duration, io::{BufReader, BufRead, ErrorKind, Write, BufWriter}, error::Error, cell::RefCell};
 
 use crate::{command_parser::HttpLikeData, cmd::ProcessRunning, cmd_handler};
 
 pub trait Process {
     fn terminate(&mut self);
 }
-
+#[derive(Debug)]
 pub enum ResponseString {
     Response(HttpLikeData),
     Terminate(HttpLikeData),
 }
-
+#[derive(Debug)]
 pub enum ResponseByte {
     Response(HttpLikeData),
     Terminate(HttpLikeData),
 }
-
+#[derive(Debug)]
 pub enum RequestString {
     Request(HttpLikeData),
     Terminate(HttpLikeData),
 }
-
+#[derive(Debug)]
 pub enum RequestByte {
     Request(HttpLikeData),
     Terminate(HttpLikeData),
@@ -35,6 +35,17 @@ pub struct NetworkConnector {
     pub processors: HashMap<usize, (Sender<RequestString>, Receiver<ResponseString>, Arc<RwLock<dyn Process>>)>,
     // pub processors_byte: HashMap<usize, (Sender<RequestByte>, Receiver<ResponseByte>, Arc<RwLock<dyn Process>>)>,
     pub self_msg: Vec<HttpLikeData>,
+}
+
+impl Drop for NetworkConnector {
+    fn drop(&mut self) {
+        for k in &self.processors {
+            {
+                let mut locker = k.1.2.write().unwrap();
+                locker.terminate();
+            }
+        }
+    }
 }
 
 // Input format: <seq number>[ <command> <data>]*
@@ -105,11 +116,12 @@ impl NetworkConnector {
 
                         if recv_buf.len() != 0 {
                             let data = HttpLikeData::multi_command_parse(&recv_buf[..]);
-                            dbg!(&data);
+                            // dbg!(&data);
                             match data {
                                 Some(val) => {
                                     let (myself1, err_stream) = NetworkConnector::do_with_incoming_data_stream(myself, val);
                                     myself = myself1;
+
                                     if let Some(val) = err_stream {
                                         need_drop.push(val);
                                     }
@@ -123,26 +135,47 @@ impl NetworkConnector {
                         recv_buf.clear();
                         // Starting handle output of processes
                         {
+                            // Starting self message send
+                            let iter = myself.self_msg.iter();
+                            for self_msg in iter {
+                                let data = &self_msg.to_network_stream()[..];
+                                let send_result = socket.write_all(data);
+                                if let Err(_) = send_result {
+                                    result = Err(7);
+                                    break 'outter;
+                                }
+                                dbg!("Sended", self_msg, String::from_utf8_lossy(data).to_string());
+                            }
+                            myself.self_msg.clear();
+
                             let iter = myself.processors.iter();
                             for queue_str in iter {
-                                let data = queue_str.1.1.recv();
-                                if let Err(_) = data {
-                                    queue_str.1.2.write().unwrap().terminate();
-                                    let data = HttpLikeData::new()
-                                        .header("Status", "Terminate")
-                                        .header("Index", &(*queue_str.0).to_string());
-                                    need_drop.push(*queue_str.0);
-                                    continue;
+                                let data = queue_str.1.1.recv_timeout(Duration::from_millis(100));
+                                if let Err(g) = data {
+                                    if g == RecvTimeoutError::Disconnected {
+                                        println!("Read from channel disconnect: {:?}", g);
+                                        {
+                                            let locker = queue_str.1.2.write();
+                                            locker.unwrap().terminate();
+                                        }
+                                        let data = HttpLikeData::new()
+                                            .header("Status", "Terminate")
+                                            .header("Index", &(*queue_str.0).to_string());
+                                        need_drop.push(*queue_str.0);
+                                        continue;
+                                    }
                                 }
 
                                 let data = data.unwrap();
                                 match data {
                                     ResponseString::Response(mut data) => {
                                         data = data.header("Ack Seq", &queue_str.0.to_string()[..]);
-                                        if let Err(_) = socket.write_all(&data.to_network_stream()[..]) {
+                                        let send_data = &data.to_network_stream()[..];
+                                        if let Err(_) = socket.write_all(send_data) {
                                             result = Err(7);
                                             break 'outter;
                                         }
+                                        dbg!("Sended", &data, String::from_utf8_lossy(send_data).to_string());
                                     },
                                     ResponseString::Terminate(data) => {
 

@@ -1,6 +1,6 @@
 #[cfg(test)]
 pub mod test {
-    use std::{net::{TcpStream, TcpListener}, time::Duration, io::{Write, Read}, thread, collections::HashMap};
+    use std::{net::{TcpStream, TcpListener}, time::Duration, io::{Write, Read, BufReader, BufRead, ErrorKind}, thread, collections::HashMap, sync::mpsc, error::Error};
 
     use crate::{command_parser::{self, HttpLikeData}, network_connector};
 
@@ -23,8 +23,37 @@ pub mod test {
 
             k.write_all(&data.to_network_stream()[..]).unwrap();
             println!("Writed");
-            thread::sleep(Duration::from_secs(10000));
+            
+            let mut k = BufReader::new(k);
+            let mut buf = vec![];
+            loop {
+                k.read_until(b'\\', &mut buf).unwrap();
+                let data = HttpLikeData::multi_command_parse(&buf[..]);
+                dbg!(&data);
+
+                buf.clear();
+            }
         }
+    }
+
+    #[test]
+    fn channel_broken_test() {
+        let (s, r) = mpsc::channel();
+        thread::spawn(move || {
+            s.send(String::from("fuck"));
+        });
+
+        let k = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1000));
+            loop {
+                let recv = r.recv_timeout(Duration::from_secs(1));
+                if let Err(t) = recv {
+                    dbg!(t);
+                }
+            }
+        });
+
+        k.join();
     }
 
     #[test]
@@ -59,8 +88,8 @@ pub mod test {
 
     #[test]
     fn command_parser_test() {
-        let cmd = "Action:new\nSeq:2\n\n".as_bytes();
-        // dbg!(HttpLikeData::multi_command_parse(cmd));
+        let cmd = "Type:Reply\nAck Seq:0\n\nE%3a%5cRustProjects%5chello_world>chcp 65001\r%0a\\".as_bytes();
+        dbg!(HttpLikeData::multi_command_parse(cmd));
     }
 
     // :(3a) \n(0a) \(5c) %(25)
